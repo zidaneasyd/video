@@ -1,0 +1,1052 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pemutar Video Universal Dark Mode</title>
+    <meta name="theme-color" content="#09090b">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Pemutar">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="icon" type="image/png" href="icon-192.png">
+    <link rel="apple-touch-icon" href="icon-192.png">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #09090b; color: #f4f4f5; }
+        ::-webkit-scrollbar { width: 3px; height: 3px; }
+        ::-webkit-scrollbar-thumb { background: #27272a; border-radius: 9999px; }
+        button:focus-visible, input:focus-visible { outline: 2px solid #818cf8; outline-offset: 2px; }
+
+        .glass-panel {
+            background: rgba(18, 18, 22, 0.85);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+        }
+
+        /* ===== DRAG & DROP PLAYLIST =====
+           Kunci: "scale" dipisah dari "transform". transform (translateY) dipakai
+           buat ngikutin jari/mouse tanpa transisi (langsung nempel),
+           sedangkan scale + shadow punya transisi sendiri biar angkatnya halus. */
+        .draggable-item {
+            position: relative;
+            margin-bottom: 0.5rem;
+            user-select: none;
+            -webkit-user-select: none;
+            transition: background-color .2s ease, border-color .2s ease,
+                        box-shadow .25s ease, scale .2s cubic-bezier(.2,.8,.2,1);
+        }
+        .draggable-item.shifting {          /* kartu lain yang bergeser */
+            transition: transform .28s cubic-bezier(.2,.8,.2,1), opacity .2s ease,
+                        background-color .2s ease, border-color .2s ease;
+        }
+        .draggable-item.lifted {            /* kartu yang lagi diangkat */
+            z-index: 40;
+            scale: 1.035;
+            background: #1e1e24;
+            border-color: rgba(129, 140, 248, .45);
+            box-shadow: 0 28px 44px -10px rgba(0,0,0,.9),
+                        0 10px 18px -6px rgba(0,0,0,.65),
+                        0 0 0 1px rgba(129,140,248,.25);
+            cursor: grabbing;
+            will-change: transform;
+        }
+        .draggable-item.settling {          /* animasi turun ke slot akhir */
+            z-index: 40;
+            transition: transform .26s cubic-bezier(.2,.8,.2,1), scale .22s ease,
+                        box-shadow .26s ease, background-color .2s ease, border-color .2s ease;
+        }
+        .is-dragging, .is-dragging * { cursor: grabbing !important; user-select: none; -webkit-user-select: none; }
+        .is-dragging .draggable-item:not(.lifted):not(.settling) { opacity: .78; }
+        .draggable-item.menu-open { z-index: 30; }
+        .drag-handle { touch-action: none; cursor: grab; }
+        .draggable-item.enter { animation: cardIn .35s cubic-bezier(.2,.8,.2,1); }
+        @keyframes cardIn { from { opacity: 0; transform: translateY(-10px) scale(.97); } }
+
+        /* ===== MENU TITIK TIGA ===== */
+        .action-menu {
+            opacity: 0;
+            transform: scale(.9) translateY(-4px);
+            transform-origin: top right;
+            pointer-events: none;
+            transition: opacity .15s ease, transform .18s cubic-bezier(.2,.8,.2,1);
+        }
+        .action-menu.open { opacity: 1; transform: none; pointer-events: auto; }
+
+        /* ===== NAV PILL ===== */
+        #bottomNav { transition: transform .25s cubic-bezier(.16,1,.3,1), opacity .25s ease; }
+        .nav-hidden { transform: translateY(120%); opacity: 0; pointer-events: none; }
+        #navPill {
+            position: absolute; border-radius: 9999px;
+            background: rgba(63,63,70,.7);
+            border: 1px solid rgba(113,113,122,.35);
+            transition: left .22s cubic-bezier(.3,1.15,.5,1), width .22s cubic-bezier(.3,1.15,.5,1);
+        }
+        .nav-btn { position: relative; z-index: 1; transition: color .15s ease, transform .1s ease; }
+        .nav-btn:active { transform: scale(.94); }
+
+        /* ===== PANEL TAMBAH ===== */
+        .slide-panel { transition: transform .35s cubic-bezier(.22,1,.36,1); }
+        .backdrop { opacity: 0; pointer-events: none; transition: opacity .3s ease; }
+        .backdrop.open { opacity: 1; pointer-events: auto; }
+
+        /* ===== TRANSISI HALAMAN & PLAYER ===== */
+        .page-enter { animation: pageIn .16s cubic-bezier(.2,.8,.2,1); }
+        @keyframes pageIn { from { opacity: 0; transform: translateY(4px); } }
+        .fade-in { animation: fadeIn .4s ease; }
+        @keyframes fadeIn { from { opacity: 0; } }
+        .fade-fast { animation: fadeIn .18s ease; }
+
+        /* ===== EQUALIZER (lagi diputar) ===== */
+        .eq { display: flex; gap: 2px; align-items: flex-end; height: 12px; }
+        .eq span { width: 2px; height: 100%; background: #818cf8; border-radius: 1px; transform-origin: bottom; animation: eq .9s ease-in-out infinite; }
+        .eq span:nth-child(2) { animation-delay: -.3s; }
+        .eq span:nth-child(3) { animation-delay: -.6s; }
+        @keyframes eq { 0%,100% { transform: scaleY(.3); } 50% { transform: scaleY(1); } }
+
+        /* ===== TOAST ===== */
+        #toast {
+            opacity: 0; transform: translate(-50%, 12px); pointer-events: none;
+            transition: opacity .25s ease, transform .3s cubic-bezier(.2,.8,.2,1);
+        }
+        #toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+        /* Player saat layar penuh: isi seluruh layar */
+        #playerWrap:fullscreen { aspect-ratio: auto; border: 0; background: #000; }
+        #playerWrap:-webkit-full-screen { aspect-ratio: auto; border: 0; background: #000; }
+        #fsHint {
+            opacity: 0; transform: translate(-50%, -10px); pointer-events: none;
+            transition: opacity .22s ease, transform .25s cubic-bezier(.2,.8,.2,1);
+        }
+        #fsHint.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col justify-between selection:bg-zinc-700 selection:text-white pb-24">
+
+    <header class="sticky top-0 z-30 glass-panel border-b border-zinc-800/60 px-5 py-3.5 flex items-center justify-between">
+        <div class="flex items-center gap-2">
+            <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            <h1 id="headerTitle" class="text-xs font-medium tracking-wide uppercase text-zinc-400">Home</h1>
+        </div>
+        <div id="headerActionContainer">
+            <button id="addPlaylistBtn" onclick="openPanel()" aria-label="Tambah video" class="hidden w-8 h-8 rounded-full bg-zinc-800/80 hover:bg-zinc-700/80 flex items-center justify-center text-zinc-200 transition active:scale-90 border border-zinc-700/50">
+                <i class="fa-solid fa-plus text-xs"></i>
+            </button>
+        </div>
+    </header>
+
+    <main class="flex-grow w-full max-w-2xl mx-auto">
+
+        <section id="pageHome" class="space-y-5">
+            <div id="playerWrap" class="w-full bg-black aspect-video relative border-b border-zinc-800/80 flex items-center justify-center shadow-2xl">
+                <div id="playerContainer" class="w-full h-full flex items-center justify-center">
+                    <div class="text-center px-4 space-y-2">
+                        <i class="fa-solid fa-circle-play text-zinc-700 text-3xl"></i>
+                        <p class="text-xs text-zinc-500 font-normal">Belum ada video dipilih. Tambahkan melalui menu Playlist.</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="w-full px-5 space-y-5">
+                <div class="space-y-1">
+                    <span class="text-[10px] font-semibold tracking-wider text-indigo-400 uppercase">Sedang Diputar</span>
+                    <h2 id="homeVideoTitle" class="font-semibold text-zinc-100 text-base leading-snug tracking-tight">Belum ada video dipilih</h2>
+                </div>
+
+                <div class="space-y-3 pt-2">
+                    <div class="flex items-center justify-between border-b border-zinc-800/60 pb-2">
+                        <h3 class="text-xs font-medium text-zinc-400 uppercase tracking-wider">Berikutnya</h3>
+                    </div>
+                    <div id="homeQueueContainer" class="space-y-2"></div>
+                </div>
+            </div>
+        </section>
+
+        <section id="pagePlaylist" class="hidden w-full px-5 pt-3 space-y-3">
+            <div class="flex items-center justify-between text-zinc-500 pb-1">
+                <p class="text-[11px] font-normal">Tahan ikon pegangan lalu seret untuk mengurutkan daftar.</p>
+            </div>
+            <div id="playlistContainer" class="relative"></div>
+        </section>
+
+        <section id="pageSettings" class="hidden w-full px-5 pt-3 space-y-4">
+            <div id="installCard" class="hidden bg-zinc-900/40 border border-zinc-800/80 rounded-xl p-4 space-y-3">
+                <div class="flex items-center gap-2 text-zinc-200">
+                    <i class="fa-solid fa-mobile-screen text-xs text-zinc-400"></i>
+                    <h2 class="text-xs font-medium uppercase tracking-wider">Pasang Aplikasi</h2>
+                </div>
+                <p class="text-xs text-zinc-400 leading-relaxed">Pasang ke layar utama supaya terbuka seperti aplikasi biasa dan tetap jalan saat offline.</p>
+                <button onclick="installApp()" class="w-full py-2.5 px-4 bg-zinc-100 hover:bg-white text-zinc-900 font-semibold rounded-lg text-xs transition flex items-center justify-center gap-2 active:scale-[0.98]">
+                    <span>Pasang Aplikasi</span>
+                </button>
+            </div>
+
+            <div class="bg-zinc-900/40 border border-zinc-800/80 rounded-xl p-4 space-y-3">
+                <div class="flex items-center gap-2 text-zinc-200">
+                    <i class="fa-solid fa-paste text-xs text-zinc-400"></i>
+                    <h2 class="text-xs font-medium uppercase tracking-wider">Akses Clipboard</h2>
+                </div>
+                <p class="text-xs text-zinc-400 leading-relaxed">Aktifkan izin untuk menempel tautan URL secara otomatis di form.</p>
+                <button onclick="requestClipboardPermission()" class="w-full py-2.5 px-4 bg-zinc-800 hover:bg-zinc-700/80 text-zinc-200 font-medium rounded-lg text-xs transition flex items-center justify-center gap-2 active:scale-[0.98] border border-zinc-700/50">
+                    <span>Minta Izin Clipboard</span>
+                </button>
+            </div>
+
+            <div class="bg-zinc-900/40 border border-zinc-800/80 rounded-xl p-4 space-y-3">
+                <div class="flex items-center gap-2 text-zinc-200">
+                    <i class="fa-solid fa-file-code text-xs text-zinc-400"></i>
+                    <h2 class="text-xs font-medium uppercase tracking-wider">Cadangan Data</h2>
+                </div>
+                <p class="text-xs text-zinc-400 leading-relaxed">Simpan playlist ke file JSON atau pulihkan dari file cadangan. ID video tetap sama saat diekspor dan diimpor.</p>
+                <p id="dataInfo" class="text-[11px] text-zinc-500 font-mono"></p>
+                <div class="grid grid-cols-2 gap-2">
+                    <button onclick="exportData()" class="py-2.5 px-4 bg-zinc-800 hover:bg-zinc-700/80 text-zinc-200 font-medium rounded-lg text-xs transition flex items-center justify-center gap-2 active:scale-[0.98] border border-zinc-700/50">
+                        <i class="fa-solid fa-download text-[10px]"></i><span>Ekspor JSON</span>
+                    </button>
+                    <button onclick="document.getElementById('importFile').click()" class="py-2.5 px-4 bg-zinc-800 hover:bg-zinc-700/80 text-zinc-200 font-medium rounded-lg text-xs transition flex items-center justify-center gap-2 active:scale-[0.98] border border-zinc-700/50">
+                        <i class="fa-solid fa-upload text-[10px]"></i><span>Impor JSON</span>
+                    </button>
+                </div>
+                <input type="file" id="importFile" accept="application/json,.json" class="hidden" onchange="handleImportFile(this)">
+            </div>
+
+            <div class="bg-zinc-900/40 border border-rose-900/30 rounded-xl p-4 space-y-3">
+                <div class="flex items-center gap-2 text-rose-400">
+                    <i class="fa-solid fa-triangle-exclamation text-xs"></i>
+                    <h2 class="text-xs font-medium uppercase tracking-wider">Reset Data</h2>
+                </div>
+                <p class="text-xs text-zinc-400 leading-relaxed">Hapus seluruh isi daftar putar yang tersimpan di memori browser.</p>
+                <button onclick="clearAllData()" class="w-full py-2.5 px-4 bg-rose-950/30 hover:bg-rose-900/40 text-rose-300 border border-rose-800/40 font-medium rounded-lg text-xs transition flex items-center justify-center gap-2 active:scale-[0.98]">
+                    <span>Reset Semua Playlist</span>
+                </button>
+            </div>
+
+            <div class="p-4 text-center">
+                <p class="text-[11px] text-zinc-600 font-medium tracking-wide">Minimal Player v5.0</p>
+            </div>
+        </section>
+
+    </main>
+
+    <div id="panelBackdrop" class="backdrop fixed inset-0 z-[45] bg-black/60" onclick="toggleSlidePanel(false)"></div>
+
+    <div id="slidePanel" inert class="slide-panel fixed inset-x-0 top-0 z-50 glass-panel border-b border-zinc-800 transform -translate-y-full shadow-2xl p-5 max-w-2xl mx-auto rounded-b-2xl">
+        <div class="flex items-center justify-between pb-3 mb-4 border-b border-zinc-800/80">
+            <div class="flex items-baseline gap-2"><h3 id="panelTitle" class="text-xs font-medium uppercase tracking-wider text-zinc-200">Tambah Video Baru</h3><span id="panelIdLabel" class="text-[10px] text-zinc-500 font-mono"></span></div>
+            <button onclick="toggleSlidePanel(false)" aria-label="Tutup" class="text-zinc-400 hover:text-white p-1 transition active:scale-90">
+                <i class="fa-solid fa-xmark text-sm"></i>
+            </button>
+        </div>
+        <form id="addForm" onsubmit="addVideo(event)" class="space-y-3.5 text-xs">
+            <div>
+                <label class="block font-medium text-zinc-400 mb-1.5">Judul Video</label>
+                <div class="flex gap-2">
+                    <input type="text" id="inputTitle" required placeholder="Contoh: Video Favorit" class="w-full px-3.5 py-2.5 bg-zinc-900/90 border border-zinc-800 rounded-lg text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition">
+                    <button type="button" onclick="autoPasteToField('inputTitle')" class="px-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg transition border border-zinc-700/50 active:scale-90" title="Tempel dari Clipboard">
+                        <i class="fa-solid fa-paste"></i>
+                    </button>
+                </div>
+            </div>
+            <div>
+                <label class="block font-medium text-zinc-400 mb-1.5">URL / Embed Link</label>
+                <div class="flex gap-2">
+                    <input type="text" id="inputUrl" required placeholder="YouTube, Vimeo, atau MP4 link" class="w-full px-3.5 py-2.5 bg-zinc-900/90 border border-zinc-800 rounded-lg text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition">
+                    <button type="button" onclick="autoPasteToField('inputUrl')" class="px-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg transition border border-zinc-700/50 active:scale-90" title="Tempel dari Clipboard">
+                        <i class="fa-solid fa-paste"></i>
+                    </button>
+                </div>
+            </div>
+            <div>
+                <label class="block font-medium text-zinc-400 mb-1.5">Cover Thumbnail (Opsional)</label>
+                <div class="flex gap-2">
+                    <input type="text" id="inputCoverUrl" placeholder="https://... atau upload file" class="w-full px-3.5 py-2.5 bg-zinc-900/90 border border-zinc-800 rounded-lg text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-zinc-500 transition">
+                    <label class="px-3 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg cursor-pointer flex items-center justify-center transition border border-zinc-700/50 active:scale-90">
+                        <i class="fa-solid fa-image"></i>
+                        <input type="file" id="inputCoverFile" accept="image/*" class="hidden" onchange="handleLocalCover(this)">
+                    </label>
+                </div>
+            </div>
+            <button type="submit" id="panelSubmitBtn" class="w-full py-2.5 bg-zinc-100 hover:bg-white text-zinc-900 font-semibold rounded-lg text-xs transition shadow-md active:scale-[0.98] mt-2">
+                Simpan ke Playlist
+            </button>
+        </form>
+    </div>
+
+    <nav id="bottomNav" class="fixed bottom-4 inset-x-0 z-40 max-w-xs mx-auto glass-panel border border-zinc-800/80 rounded-full shadow-2xl py-2 px-3">
+        <span id="navPill"></span>
+        <div class="flex justify-around items-center">
+            <button onclick="switchTab('home')" id="navHome" class="nav-btn flex items-center gap-2 px-3 py-1.5 rounded-full text-zinc-100">
+                <i class="fa-solid fa-house text-xs"></i>
+                <span class="text-xs font-medium">Home</span>
+            </button>
+            <button onclick="switchTab('playlist')" id="navPlaylist" class="nav-btn flex items-center gap-2 px-3 py-1.5 rounded-full text-zinc-400 hover:text-zinc-200">
+                <i class="fa-solid fa-list text-xs"></i>
+                <span class="text-xs font-medium">Playlist</span>
+            </button>
+            <button onclick="switchTab('settings')" id="navSettings" class="nav-btn flex items-center gap-2 px-3 py-1.5 rounded-full text-zinc-400 hover:text-zinc-200">
+                <i class="fa-solid fa-gear text-xs"></i>
+                <span class="text-xs font-medium">Setting</span>
+            </button>
+        </div>
+    </nav>
+
+    <button id="fsHint" onclick="enterPlayerFullscreen()" class="fixed left-1/2 top-3 z-[70] px-4 py-2 rounded-full bg-indigo-500 text-white text-xs font-medium shadow-2xl flex items-center gap-2">
+        <i class="fa-solid fa-expand text-[10px]"></i><span>Ketuk untuk layar penuh</span>
+    </button>
+
+    <div id="toast" class="fixed left-1/2 bottom-24 z-[60] px-4 py-2 rounded-full bg-zinc-800 border border-zinc-700/70 text-xs text-zinc-100 shadow-2xl"></div>
+
+    <script>
+        const $ = (id) => document.getElementById(id);
+        const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+        /* ===== DATABASE =====
+           Setiap video punya bentuk data yang sama:
+           { id: "vid-0001", title, url, cover, createdAt }
+           - id urut, mudah dibaca, dan TIDAK pernah dipakai ulang (counter terpisah).
+           - data lama tanpa id otomatis diberi id saat dibuka. */
+        const DB_KEY = 'universal_video_playlist';
+        const SEQ_KEY = 'universal_video_seq';
+        const ACTIVE_KEY = 'universal_video_active';
+        const padId = (n) => 'vid-' + String(n).padStart(4, '0');
+
+        function nextId() {
+            const n = (parseInt(localStorage.getItem(SEQ_KEY)) || 0) + 1;
+            localStorage.setItem(SEQ_KEY, n);
+            return padId(n);
+        }
+
+        function loadPlaylist() {
+            let raw = [];
+            try { raw = JSON.parse(localStorage.getItem(DB_KEY)) || []; } catch (e) { raw = []; }
+            let seq = parseInt(localStorage.getItem(SEQ_KEY)) || 0;
+            raw.forEach(it => {
+                const m = /^vid-(\d+)$/.exec(it.id || '');
+                if (m) seq = Math.max(seq, parseInt(m[1]));
+            });
+            const seen = new Set();
+            const clean = raw.map(it => {
+                let id = it.id;
+                if (!/^vid-\d+$/.test(id || '') || seen.has(id)) { seq++; id = padId(seq); }
+                seen.add(id);
+                return {
+                    id,
+                    title: it.title || 'Tanpa judul',
+                    url: it.url || '',
+                    cover: it.cover || '',
+                    createdAt: it.createdAt || new Date().toISOString()
+                };
+            });
+            localStorage.setItem(SEQ_KEY, seq);
+            localStorage.setItem(DB_KEY, JSON.stringify(clean));
+            return clean;
+        }
+
+        let playlist = loadPlaylist();
+        let activeId = localStorage.getItem(ACTIVE_KEY) || null;
+        if (!playlist.some(v => v.id === activeId)) activeId = playlist.length ? playlist[0].id : null;
+        let editingId = null;
+        let localCoverBase64 = "";
+
+        const getActive = () => playlist.find(v => v.id === activeId) || null;
+        function setActive(id) {
+            activeId = id;
+            localStorage.setItem(ACTIVE_KEY, id || '');
+        }
+        let currentTab = 'home';
+        let renderedPlayerKey = undefined;   // biar video nggak restart tiap pindah tab
+
+        function savePlaylist() {
+            localStorage.setItem(DB_KEY, JSON.stringify(playlist));
+        }
+
+        /* ---------- Toast ---------- */
+        let toastTimer;
+        function showToast(msg) {
+            const t = $('toast');
+            t.textContent = msg;
+            t.classList.add('show');
+            clearTimeout(toastTimer);
+            toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+        }
+
+        /* ---------- Clipboard ---------- */
+        async function requestClipboardPermission() {
+            try {
+                if (navigator.permissions && navigator.permissions.query) {
+                    const permission = await navigator.permissions.query({ name: 'clipboard-read' });
+                    if (permission.state === 'granted' || permission.state === 'prompt') {
+                        showToast("Izin clipboard telah dikonfirmasi.");
+                        return;
+                    }
+                }
+                await navigator.clipboard.readText();
+                showToast("Akses clipboard berhasil diizinkan!");
+            } catch (err) {
+                showToast("Gagal membaca clipboard. Cek izin browser.");
+            }
+        }
+
+        async function autoPasteToField(fieldId) {
+            try {
+                const text = await navigator.clipboard.readText();
+                if (text) { $(fieldId).value = text; }
+                else { showToast("Clipboard kosong."); }
+            } catch (err) {
+                showToast("Tidak bisa akses clipboard. Izinkan dulu di Setting.");
+            }
+        }
+
+        function handleLocalCover(input) {
+            if (input.files && input.files[0]) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    localCoverBase64 = e.target.result;
+                    $('inputCoverUrl').value = "[File Lokal]";
+                };
+                reader.readAsDataURL(input.files[0]);
+            }
+        }
+
+        /* ---------- Nav pill (indikator yang meluncur) ---------- */
+        function movePill() {
+            const btn = $({ home: 'navHome', playlist: 'navPlaylist', settings: 'navSettings' }[currentTab]);
+            const pill = $('navPill');
+            pill.style.left = btn.offsetLeft + 'px';
+            pill.style.top = btn.offsetTop + 'px';
+            pill.style.width = btn.offsetWidth + 'px';
+            pill.style.height = btn.offsetHeight + 'px';
+        }
+
+        /* ---------- Tab ---------- */
+        function switchTab(tabName) {
+            if (drag || settling) return;
+            const changed = tabName !== currentTab;
+            currentTab = tabName;
+
+            const pages = { home: $('pageHome'), playlist: $('pagePlaylist'), settings: $('pageSettings') };
+            const navs = { home: $('navHome'), playlist: $('navPlaylist'), settings: $('navSettings') };
+            const titles = { home: 'Home', playlist: 'Playlist', settings: 'Pengaturan' };
+
+            Object.keys(pages).forEach(k => {
+                pages[k].classList.toggle('hidden', k !== tabName);
+                navs[k].classList.toggle('text-zinc-100', k === tabName);
+                navs[k].classList.toggle('text-zinc-400', k !== tabName);
+            });
+
+            if (changed) {
+                const p = pages[tabName];
+                p.classList.remove('page-enter');
+                void p.offsetWidth;            // paksa reflow supaya animasi bisa diputar ulang
+                p.classList.add('page-enter');
+                const h = $('headerTitle');
+                h.classList.remove('fade-fast'); void h.offsetWidth; h.classList.add('fade-fast');
+            }
+            $('headerTitle').innerText = titles[tabName];
+            $('addPlaylistBtn').classList.toggle('hidden', tabName !== 'playlist');
+            movePill();
+
+            if (tabName === 'home') { renderPlayer(); renderHomeQueue(); }
+            else if (tabName === 'playlist') { renderPlaylistUI(); }
+            else if (tabName === 'settings') { updateDataInfo(); }
+        }
+
+        /* ---------- Parsing sumber video ---------- */
+        function parseVideoSource(input) {
+            input = input.trim();
+            if (input.startsWith('<iframe') && input.includes('src=')) {
+                const srcMatch = input.match(/src="([^"]+)"/);
+                if (srcMatch && srcMatch[1]) return { type: 'iframe', url: srcMatch[1] };
+            }
+            const ytRegExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+            const ytMatch = input.match(ytRegExp);
+            if (ytMatch && ytMatch[2].length === 11) {
+                return { type: 'youtube', url: `https://www.youtube.com/embed/${ytMatch[2]}?autoplay=1&rel=0` };
+            }
+            const vimeoRegExp = /(?:vimeo\.com\/|player\.vimeo\.com\/video\/)([0-9]+)/;
+            const vimeoMatch = input.match(vimeoRegExp);
+            if (vimeoMatch && vimeoMatch[1]) {
+                return { type: 'vimeo', url: `https://player.vimeo.com/video/${vimeoMatch[1]}?autoplay=1` };
+            }
+            if (input.match(/\.(mp4|webm|ogg|mov)(\?.*)?$/i)) {
+                return { type: 'direct', url: input };
+            }
+            if (input.length === 11) {
+                return { type: 'youtube', url: `https://www.youtube.com/embed/${input}?autoplay=1&rel=0` };
+            }
+            return { type: 'iframe', url: input };
+        }
+
+        /* ---------- Home ---------- */
+        function renderPlayer() {
+            const container = $('playerContainer');
+            const titleEl = $('homeVideoTitle');
+            const current = getActive();
+            const key = current ? `${current.id}|${current.url}` : null;
+            titleEl.innerText = current ? current.title : "Belum ada video dipilih";   // judul selalu fresh (kena edit)
+
+            if (key === renderedPlayerKey) return;   // video sama -> jangan di-reload
+            renderedPlayerKey = key;
+
+            titleEl.classList.remove('fade-in'); void titleEl.offsetWidth; titleEl.classList.add('fade-in');
+
+            if (!current) {
+                container.innerHTML = `
+                    <div class="text-center px-4 space-y-2 fade-in">
+                        <i class="fa-solid fa-circle-play text-zinc-700 text-3xl"></i>
+                        <p class="text-xs text-zinc-500 font-normal">Belum ada video dipilih. Tambahkan melalui menu Playlist.</p>
+                    </div>`;
+                titleEl.innerText = "Belum ada video dipilih";
+                return;
+            }
+
+            titleEl.innerText = current.title;
+            const parsed = parseVideoSource(current.url);
+
+            if (parsed.type === 'direct') {
+                container.innerHTML = `
+                    <video controls autoplay class="w-full h-full object-contain bg-black fade-in">
+                        <source src="${esc(parsed.url)}" type="video/mp4">
+                        Browser Anda tidak mendukung video HTML5.
+                    </video>`;
+            } else {
+                container.innerHTML = `
+                    <iframe class="w-full h-full border-0 fade-in" src="${esc(parsed.url)}" title="${esc(current.title)}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>`;
+            }
+        }
+
+        function renderHomeQueue() {
+            const queueContainer = $('homeQueueContainer');
+            queueContainer.innerHTML = '';
+
+            if (playlist.length <= 1) {
+                queueContainer.innerHTML = `<p class="text-xs text-zinc-600 font-normal py-3">Tidak ada video lain dalam antrean.</p>`;
+                return;
+            }
+
+            playlist.forEach((item, index) => {
+                if (item.id === activeId) return;
+                const coverImg = item.cover || `https://placehold.co/120x68/18181b/52525b?text=Video`;
+                const card = document.createElement('div');
+                card.className = "flex items-center gap-3 p-2 rounded-xl bg-zinc-900/40 border border-zinc-800/40 hover:border-zinc-700/60 hover:bg-zinc-900/70 transition cursor-pointer group active:scale-[0.98]";
+                card.onclick = () => playVideo(index);
+                card.innerHTML = `
+                    <div class="w-20 h-12 rounded-lg bg-zinc-800 overflow-hidden flex-shrink-0 relative">
+                        <img src="${esc(coverImg)}" alt="Cover" draggable="false" class="w-full h-full object-cover group-hover:scale-105 transition duration-300">
+                        <div class="absolute inset-0 bg-black/30 flex items-center justify-center opacity-0 group-hover:opacity-100 transition">
+                            <i class="fa-solid fa-play text-white text-[10px]"></i>
+                        </div>
+                    </div>
+                    <div class="min-w-0 flex-grow">
+                        <span class="text-xs font-medium text-zinc-200 block truncate group-hover:text-white transition">${esc(item.title)}</span>
+                        <span class="text-[10px] text-zinc-500 block truncate">Ketuk untuk memutar</span>
+                    </div>`;
+                queueContainer.appendChild(card);
+            });
+        }
+
+        /* ---------- Playlist UI ---------- */
+        function renderPlaylistUI(enterIndex = null) {
+            const container = $('playlistContainer');
+            container.innerHTML = '';
+
+            if (playlist.length === 0) {
+                container.innerHTML = `
+                    <div class="text-center py-12 space-y-2">
+                        <i class="fa-solid fa-list-check text-zinc-700 text-2xl"></i>
+                        <p class="text-xs text-zinc-500 font-normal">Playlist masih kosong. Tekan tombol + untuk menambah video.</p>
+                    </div>`;
+                return;
+            }
+
+            playlist.forEach((item, index) => {
+                const isActive = (item.id === activeId);
+                const coverImg = item.cover || `https://placehold.co/120x68/18181b/52525b?text=Video`;
+                const card = document.createElement('div');
+                card.className = `draggable-item p-2.5 rounded-xl border flex items-center justify-between gap-3 ${isActive ? 'bg-zinc-800/80 border-zinc-600/80' : 'bg-zinc-900/50 border-zinc-800/80 hover:border-zinc-700/60'}${index === enterIndex ? ' enter' : ''}`;
+
+                card.innerHTML = `
+                    <div class="flex items-center gap-3 cursor-pointer flex-grow min-w-0" data-play>
+                        <div class="w-16 h-10 rounded-lg bg-zinc-800 overflow-hidden flex-shrink-0 relative">
+                            <img src="${esc(coverImg)}" alt="Cover" draggable="false" class="w-full h-full object-cover">
+                            ${isActive ? `<div class="absolute inset-0 bg-black/55 flex items-center justify-center"><div class="eq"><span></span><span></span><span></span></div></div>` : ''}
+                        </div>
+                        <div class="min-w-0">
+                            <span class="text-xs ${isActive ? 'text-white font-semibold' : 'text-zinc-200 font-medium'} block truncate">${esc(item.title)}</span>
+                            <span class="text-[10px] text-zinc-500 truncate block">${esc(item.url)}</span>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-0.5 relative">
+                        <button data-menu-btn aria-label="Menu" class="text-zinc-500 hover:text-zinc-200 p-2 transition text-xs active:scale-90">
+                            <i class="fa-solid fa-ellipsis-vertical"></i>
+                        </button>
+                        <div data-menu class="action-menu absolute right-9 top-9 z-20 w-28 bg-zinc-800 border border-zinc-700/80 rounded-lg shadow-xl overflow-hidden py-1">
+                            <button data-act-play class="w-full text-left px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700 flex items-center gap-2">
+                                <i class="fa-solid fa-play text-[9px]"></i> Putar
+                            </button>
+                            <button data-act-edit class="w-full text-left px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-700 flex items-center gap-2">
+                                <i class="fa-solid fa-pen text-[9px]"></i> Edit
+                            </button>
+                            <button data-act-del class="w-full text-left px-3 py-1.5 text-xs text-rose-400 hover:bg-zinc-700 flex items-center gap-2">
+                                <i class="fa-solid fa-trash text-[9px]"></i> Hapus
+                            </button>
+                        </div>
+                        <button data-handle aria-label="Seret untuk mengurutkan" class="drag-handle text-zinc-500 hover:text-zinc-300 p-2.5 -mr-1 transition">
+                            <i class="fa-solid fa-grip-vertical text-xs"></i>
+                        </button>
+                    </div>`;
+
+                card.dataset.id = item.id;
+                const menu = card.querySelector('[data-menu]');
+                card.querySelector('[data-play]').addEventListener('click', () => playVideo(index));
+                card.querySelector('[data-menu-btn]').addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const wasOpen = menu.classList.contains('open');
+                    closeMenus();
+                    if (!wasOpen) { menu.classList.add('open'); card.classList.add('menu-open'); }
+                });
+                card.querySelector('[data-act-play]').addEventListener('click', () => playVideo(index));
+                card.querySelector('[data-act-edit]').addEventListener('click', (e) => { e.stopPropagation(); closeMenus(); openPanel(item.id); });
+                card.querySelector('[data-act-del]').addEventListener('click', (e) => { e.stopPropagation(); deleteVideo(index, card); });
+
+                const handle = card.querySelector('[data-handle]');
+                handle.addEventListener('pointerdown', (e) => startDrag(e, card, index, handle));
+                handle.addEventListener('pointermove', (e) => { if (drag) drag.pointerY = e.clientY; });
+                handle.addEventListener('pointerup', endDrag);
+                handle.addEventListener('pointercancel', endDrag);
+                handle.addEventListener('contextmenu', (e) => e.preventDefault());
+
+                container.appendChild(card);
+            });
+        }
+
+        function closeMenus() {
+            document.querySelectorAll('.action-menu.open').forEach(m => {
+                m.classList.remove('open');
+                m.closest('.draggable-item')?.classList.remove('menu-open');
+            });
+        }
+        window.addEventListener('click', closeMenus);
+
+        /* =====================================================
+           DRAG & DROP (pointer events -> jalan di mouse & layar sentuh)
+           Alur: pointerdown angkat kartu -> tiap frame kartu ngikutin jari,
+           kartu lain digeser lewat translateY -> pointerup: kartu "mendarat"
+           di slot tujuan, baru setelah itu data array benar-benar ditukar.
+           ===================================================== */
+        let drag = null;
+        let settling = false;
+
+        function startDrag(e, card, index, handle) {
+            if (drag || settling || (e.pointerType === 'mouse' && e.button !== 0)) return;
+            e.preventDefault();
+            closeMenus();
+
+            const cards = [...$('playlistContainer').querySelectorAll('.draggable-item')];
+            // jarak antar slot = tinggi kartu + margin (diambil dari posisi asli)
+            const step = cards.length > 1 ? cards[1].offsetTop - cards[0].offsetTop
+                                          : card.offsetHeight + 8;
+
+            drag = {
+                card, cards, index, current: index, step,
+                startY: e.clientY, pointerY: e.clientY,
+                startScroll: window.scrollY, raf: 0
+            };
+
+            handle.setPointerCapture(e.pointerId);   // gerakan tetap kebaca walau jari keluar dari handle
+            cards.forEach(c => { if (c !== card) c.classList.add('shifting'); });
+            card.classList.add('lifted');
+            document.body.classList.add('is-dragging');
+            if (navigator.vibrate) navigator.vibrate(8);
+            drag.raf = requestAnimationFrame(dragLoop);
+        }
+
+        function dragLoop() {
+            if (!drag) return;
+            const d = drag;
+
+            // auto-scroll kalau kartu didekatkan ke tepi layar
+            const vh = window.innerHeight, topZone = 120, botZone = 140;
+            let v = 0;
+            if (d.pointerY < topZone) v = -((topZone - d.pointerY) / topZone) * 16;
+            else if (d.pointerY > vh - botZone) v = ((d.pointerY - (vh - botZone)) / botZone) * 16;
+            if (v) window.scrollBy(0, v);
+
+            // posisi kartu = gerakan jari + seberapa jauh halaman ke-scroll
+            const n = d.cards.length;
+            let dy = (d.pointerY - d.startY) + (window.scrollY - d.startScroll);
+            dy = clamp(dy, -d.index * d.step, (n - 1 - d.index) * d.step);
+            d.card.style.transform = `translateY(${dy}px)`;
+
+            // slot tujuan = posisi kartu dibulatkan ke slot terdekat
+            const target = clamp(Math.round(d.index + dy / d.step), 0, n - 1);
+            if (target !== d.current) {
+                d.current = target;
+                applyShifts(d);
+                if (navigator.vibrate) navigator.vibrate(4);
+            }
+            d.raf = requestAnimationFrame(dragLoop);
+        }
+
+        function applyShifts(d) {
+            d.cards.forEach((c, i) => {
+                if (i === d.index) return;
+                let shift = 0;
+                if (d.index < d.current && i > d.index && i <= d.current) shift = -d.step;   // naik 1 slot
+                else if (d.current < d.index && i >= d.current && i < d.index) shift = d.step; // turun 1 slot
+                c.style.transform = shift ? `translateY(${shift}px)` : '';
+            });
+        }
+
+        function endDrag() {
+            if (!drag) return;
+            const d = drag;
+            drag = null;
+            settling = true;
+            cancelAnimationFrame(d.raf);
+            document.body.classList.remove('is-dragging');
+
+            // kartu meluncur turun ke slot akhir, scale & shadow memudar
+            d.card.classList.remove('lifted');
+            d.card.classList.add('settling');
+            d.card.style.transform = `translateY(${(d.current - d.index) * d.step}px)`;
+
+            setTimeout(() => {
+                if (d.current !== d.index) {
+                    const from = d.index, to = d.current;
+                    const [moved] = playlist.splice(from, 1);
+                    playlist.splice(to, 0, moved);
+
+                    savePlaylist();
+                }
+                // DOM sudah tampak berurutan, jadi render ulang nggak kelihatan loncat
+                renderPlaylistUI();
+                settling = false;
+            }, 270);
+        }
+
+        /* ---------- Aksi video ---------- */
+        function playVideo(index) {
+            if (drag || settling) return;
+            setActive(playlist[index].id);
+            switchTab('home');
+        }
+
+        /* Buka panel: tanpa id = mode tambah, dengan id = mode edit */
+        function openPanel(id = null) {
+            editingId = id;
+            const item = id ? playlist.find(v => v.id === id) : null;
+            $('panelTitle').textContent = item ? 'Edit Video' : 'Tambah Video Baru';
+            $('panelIdLabel').textContent = item ? item.id : '';
+            $('panelSubmitBtn').textContent = item ? 'Simpan Perubahan' : 'Simpan ke Playlist';
+            $('inputTitle').value = item ? item.title : '';
+            $('inputUrl').value = item ? item.url : '';
+            const isLocalCover = !!(item && item.cover && item.cover.startsWith('data:'));
+            localCoverBase64 = isLocalCover ? item.cover : '';
+            $('inputCoverUrl').value = item ? (isLocalCover ? '[File Lokal]' : item.cover) : '';
+            $('inputCoverFile').value = '';
+            toggleSlidePanel(true);
+        }
+
+        function addVideo(e) {
+            e.preventDefault();
+            const title = $('inputTitle').value.trim();
+            const url = $('inputUrl').value.trim();
+            const coverInput = $('inputCoverUrl').value.trim();
+            const cover = coverInput && coverInput !== "[File Lokal]" ? coverInput : localCoverBase64;
+            if (!title || !url) return;
+
+            if (editingId) {                       // mode edit: id tetap, isi diperbarui
+                const item = playlist.find(v => v.id === editingId);
+                if (item) { item.title = title; item.url = url; item.cover = cover; }
+                editingId = null;
+                savePlaylist();
+                toggleSlidePanel(false);
+                renderPlaylistUI();
+                showToast('Perubahan disimpan');
+                return;
+            }
+
+            const item = { id: nextId(), title, url, cover, createdAt: new Date().toISOString() };
+            playlist.push(item);
+            savePlaylist();
+            if (activeId === null) setActive(item.id);
+
+            toggleSlidePanel(false);
+            renderPlaylistUI(playlist.length - 1);
+            requestAnimationFrame(() => {
+                const last = $('playlistContainer').lastElementChild;
+                if (last) last.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            });
+        }
+
+        function deleteVideo(index, card) {
+            if (drag || settling) return;
+            closeMenus();
+            settling = true;
+
+            // kartu menciut dulu (tinggi, margin, padding -> 0) baru datanya dihapus
+            const h = card.offsetHeight;
+            card.style.height = h + 'px';
+            card.style.overflow = 'hidden';
+            void card.offsetHeight;
+            card.style.transition = 'height .28s cubic-bezier(.2,.8,.2,1), margin .28s ease, padding .28s ease, opacity .2s ease, transform .28s ease, border-width .28s ease';
+            card.style.height = '0px';
+            card.style.marginBottom = '0px';
+            card.style.paddingTop = '0px';
+            card.style.paddingBottom = '0px';
+            card.style.borderWidth = '0px';
+            card.style.opacity = '0';
+            card.style.transform = 'translateX(24px)';
+
+            setTimeout(() => {
+                const [removed] = playlist.splice(index, 1);
+                if (removed.id === activeId) {
+                    const next = playlist[Math.min(index, playlist.length - 1)];
+                    setActive(next ? next.id : null);
+                }
+                savePlaylist();
+                renderPlaylistUI();
+                settling = false;
+            }, 300);
+        }
+
+        function clearAllData() {
+            if (confirm("Reset seluruh daftar putar?")) {
+                playlist = [];
+                setActive(null);
+                localStorage.removeItem(DB_KEY);   // counter ID sengaja tidak direset
+                switchTab('home');
+            }
+        }
+
+        /* =====================================================
+           EKSPOR / IMPOR JSON
+           Format file:
+           { app, version, exportedAt, seq, activeId, items: [ {id,title,url,cover,createdAt} ] }
+           ID dibawa apa adanya. Saat impor, ID yang sama = isi diperbarui,
+           ID baru = ditambahkan, ID rusak/ganda = dibuatkan ID baru.
+           ===================================================== */
+        function updateDataInfo() {
+            const seq = parseInt(localStorage.getItem(SEQ_KEY)) || 0;
+            $('dataInfo').textContent = playlist.length
+                ? `${playlist.length} video · ID terakhir dibuat: ${padId(seq)}`
+                : 'Belum ada data tersimpan.';
+        }
+
+        function exportData() {
+            if (!playlist.length) { showToast('Playlist masih kosong, belum ada yang diekspor.'); return; }
+            const payload = {
+                app: 'pemutar-video',
+                version: 1,
+                exportedAt: new Date().toISOString(),
+                seq: parseInt(localStorage.getItem(SEQ_KEY)) || 0,
+                activeId,
+                items: playlist
+            };
+            const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `pemutar-video-${new Date().toISOString().slice(0, 10)}.json`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+            showToast(`${playlist.length} video diekspor`);
+        }
+
+        function handleImportFile(input) {
+            const file = input.files && input.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = () => {
+                try { importData(JSON.parse(reader.result)); }
+                catch (e) { showToast('File bukan JSON yang valid.'); }
+                input.value = '';
+            };
+            reader.readAsText(file);
+        }
+
+        function importData(data) {
+            const list = Array.isArray(data) ? data : (data && Array.isArray(data.items) ? data.items : null);
+            if (!list) { showToast('Format tidak dikenali: butuh daftar "items".'); return; }
+            const valid = list.filter(it => it && typeof it.url === 'string' && it.url.trim());
+            if (!valid.length) { showToast('Tidak ada video valid di file ini.'); return; }
+
+            // counter ID harus >= semua ID yang sudah ada maupun yang akan masuk
+            let seq = parseInt(localStorage.getItem(SEQ_KEY)) || 0;
+            [...playlist, ...valid].forEach(it => {
+                const m = /^vid-(\d+)$/.exec(it.id || '');
+                if (m) seq = Math.max(seq, parseInt(m[1]));
+            });
+            if (data && data.seq) seq = Math.max(seq, parseInt(data.seq) || 0);
+
+            // hitung dampak dulu, lalu minta konfirmasi sebelum menimpa data
+            const existingIds = new Set(playlist.map(v => v.id));
+            const seenInFile = new Set();
+            let nUpdate = 0;
+            valid.forEach(it => {
+                if (/^vid-\d+$/.test(it.id || '') && !seenInFile.has(it.id)) {
+                    seenInFile.add(it.id);
+                    if (existingIds.has(it.id)) nUpdate++;
+                }
+            });
+            const nNew = valid.length - nUpdate;
+            const ok = confirm(
+                `File berisi ${valid.length} video.\n` +
+                `• ${nNew} akan ditambahkan\n` +
+                `• ${nUpdate} punya ID yang sama dan isinya AKAN DITIMPA\n\n` +
+                `Lanjutkan impor?`
+            );
+            if (!ok) return;
+
+            localStorage.setItem(SEQ_KEY, seq);
+            const used = new Set();
+            valid.forEach(it => {
+                let id = it.id;
+                if (!/^vid-\d+$/.test(id || '') || used.has(id)) id = nextId();
+                used.add(id);
+                const rec = {
+                    id,
+                    title: String(it.title || 'Tanpa judul'),
+                    url: it.url.trim(),
+                    cover: typeof it.cover === 'string' ? it.cover : '',
+                    createdAt: it.createdAt || new Date().toISOString()
+                };
+                const i = playlist.findIndex(v => v.id === id);
+                if (i >= 0) playlist[i] = rec; else playlist.push(rec);
+            });
+
+            savePlaylist();
+            if (!getActive()) {
+                const wanted = data && data.activeId && playlist.some(v => v.id === data.activeId) ? data.activeId : playlist[0].id;
+                setActive(wanted);
+            }
+            renderPlaylistUI();
+            updateDataInfo();
+            showToast(`Impor selesai: ${nNew} baru, ${nUpdate} diperbarui`);
+        }
+
+        /* ---------- Panel tambah ---------- */
+        function toggleSlidePanel(show) {
+            $('slidePanel').classList.toggle('-translate-y-full', !show);
+            $('slidePanel').inert = !show;
+            $('panelBackdrop').classList.toggle('open', show);
+        }
+        window.addEventListener('keydown', (e) => { if (e.key === 'Escape') toggleSlidePanel(false); });
+
+        /* =====================================================
+           AUTO LAYAR PENUH SAAT HP DIPUTAR (LANDSCAPE)
+           Browser hanya mengizinkan layar penuh setelah ada sentuhan user
+           (berlaku beberapa detik). Kalau ditolak, muncul tombol
+           "Ketuk untuk layar penuh" - cukup satu ketukan.
+           ===================================================== */
+        const isTouch = matchMedia('(pointer: coarse)').matches;
+        const fsElement = () => document.fullscreenElement || document.webkitFullscreenElement;
+
+        function isLandscape() {
+            // screen.orientation tidak terpengaruh keyboard; matchMedia jadi cadangan
+            return screen.orientation ? screen.orientation.type.startsWith('landscape')
+                                      : matchMedia('(orientation: landscape)').matches;
+        }
+        let lastLandscape = isLandscape();
+
+        let fsHintTimer;
+        function showFsHint() {
+            $('fsHint').classList.add('show');
+            clearTimeout(fsHintTimer);
+            fsHintTimer = setTimeout(hideFsHint, 6000);
+        }
+        function hideFsHint() { $('fsHint').classList.remove('show'); }
+
+        async function enterPlayerFullscreen() {
+            const wrap = $('playerWrap');
+            const req = wrap.requestFullscreen || wrap.webkitRequestFullscreen;
+            try {
+                if (req) { await req.call(wrap); hideFsHint(); return true; }
+                const v = wrap.querySelector('video');            // iPhone: hanya <video> yang bisa
+                if (v && v.webkitEnterFullscreen) { v.webkitEnterFullscreen(); hideFsHint(); return true; }
+            } catch (e) {}
+            return false;
+        }
+
+        function onOrientationChange() {
+            const land = isLandscape();
+            if (land === lastLandscape) return;      // abaikan kalau sebenarnya tidak berubah
+            lastLandscape = land;
+            if (!isTouch) return;                    // hanya HP/tablet, bukan jendela desktop
+
+            if (land) {
+                if (currentTab === 'home' && getActive() && !fsElement() && !drag) {
+                    enterPlayerFullscreen().then(ok => { if (!ok) showFsHint(); });
+                }
+            } else {
+                hideFsHint();
+                if (fsElement() === $('playerWrap')) {
+                    (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+                }
+            }
+        }
+        if (screen.orientation) screen.orientation.addEventListener('change', onOrientationChange);
+        window.addEventListener('orientationchange', () => setTimeout(onOrientationChange, 150));
+        matchMedia('(orientation: landscape)').addEventListener('change', onOrientationChange);
+        document.addEventListener('fullscreenchange', () => { if (fsElement()) hideFsHint(); });
+
+        /* ===== PWA: tombol pasang + service worker ===== */
+        let deferredInstall = null;
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredInstall = e;
+            $('installCard').classList.remove('hidden');
+        });
+        async function installApp() {
+            if (!deferredInstall) return;
+            deferredInstall.prompt();
+            await deferredInstall.userChoice;
+            deferredInstall = null;
+            $('installCard').classList.add('hidden');
+        }
+        window.addEventListener('appinstalled', () => {
+            $('installCard').classList.add('hidden');
+            showToast('Aplikasi terpasang');
+        });
+        if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+            window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
+        }
+
+        /* ---------- Nav auto-hide saat scroll ---------- */
+        let lastScrollTop = 0;
+        let touchStartY = 0;
+
+        window.addEventListener('touchstart', (e) => { touchStartY = e.touches[0].clientY; }, { passive: true });
+        window.addEventListener('touchend', (e) => {
+            if (touchStartY - e.changedTouches[0].clientY > 40) $('bottomNav').classList.remove('nav-hidden');
+        });
+
+        window.addEventListener('scroll', () => {
+            if (drag) return;   // jangan sembunyikan nav gara-gara auto-scroll saat drag
+            const st = window.pageYOffset || document.documentElement.scrollTop;
+            const bottomNav = $('bottomNav');
+            if (st > lastScrollTop && st > 40) bottomNav.classList.add('nav-hidden');
+            else bottomNav.classList.remove('nav-hidden');
+            lastScrollTop = st <= 0 ? 0 : st;
+        });
+
+        window.addEventListener('resize', movePill);
+        window.onload = function() {
+            renderPlayer();
+            renderHomeQueue();
+            movePill();
+            if (document.fonts && document.fonts.ready) document.fonts.ready.then(movePill);
+        };
+    </script>
+</body>
+</html>
